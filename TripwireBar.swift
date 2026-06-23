@@ -9,7 +9,7 @@ import ObjectiveC
 // Green = OK, Yellow = Warning, Orange = Critical, Red = Emergency.
 // Includes sound alerts and persistent popup on escalation.
 
-class TripwireBar: NSObject, NSApplicationDelegate {
+class TripwireBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var menu: NSMenu!
@@ -29,16 +29,18 @@ class TripwireBar: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
-        // Use a button with an IMAGE (not attributed string) to preserve color
+        // Explicit click handling (manual menu show, no auto-menu)
         if let button = statusItem.button {
             button.image = makeDot(color: .systemGray, size: 18)
             button.imagePosition = .imageOnly
-            // Critical: disable template rendering so our colors show
             button.image?.isTemplate = false
+            button.target = self
+            button.action = #selector(statusBarClicked)
+            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         }
 
         buildMenu()
-        statusItem.menu = menu
+        // Do NOT set statusItem.menu — we show it manually via statusBarClicked()
 
         updateMetrics()
         timer = Timer.scheduledTimer(timeInterval: 10.0, target: self,
@@ -47,6 +49,20 @@ class TripwireBar: NSObject, NSApplicationDelegate {
 
         // Request notification permission
         requestNotificationPermission()
+    }
+
+    // ── Status Bar Click Handler ────────────────────────────
+
+    @objc func statusBarClicked() {
+        guard let button = statusItem.button else { return }
+        updateMetrics()
+        // Show menu on next runloop tick to avoid event-handling conflict
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.menu.popUp(positioning: nil,
+                           at: NSPoint(x: 0, y: button.bounds.height + 4),
+                           in: button)
+        }
     }
 
     // ── Build Menu ──────────────────────────────────────────
@@ -276,11 +292,6 @@ print(json.dumps(procs[:30]))
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
         window.center()
 
-        // Clean up reference when user closes via red X
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
-            self?.alertWindow = nil
-        }
-
         let contentView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
         window.contentView = contentView
 
@@ -420,6 +431,7 @@ print(json.dumps(procs[:30]))
         contentView.addSubview(dismissBtn)
 
         alertWindow = window
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -483,6 +495,14 @@ print(json.dumps(procs[:30]))
     @objc func closeKillPanel(_ sender: NSButton) {
         alertWindow?.close()
         alertWindow = nil
+    }
+
+    // ── NSWindowDelegate — prevent auto-close ───────────────
+
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window == alertWindow {
+            alertWindow = nil
+        }
     }
 
     // ── Menu Actions ──────────────────────────────────────────
