@@ -1,17 +1,17 @@
 import Cocoa
 import Foundation
 import AppKit
-import UserNotifications
 
 // ── Tripwire Menu Bar App ─────────────────────────────────────
 // Shows system health with a COLORED dot (immune to vibrancy).
 // Green = OK, Yellow = Warning, Orange = Critical, Red = Emergency.
 // Includes sound alerts and persistent popup on escalation.
 
-class TripwireBar: NSObject, NSApplicationDelegate {
+class TripwireBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var menu: NSMenu!
+    private var statusItemClickMonitor: Any?
 
     // Menu items that update dynamically
     private var loadItem: NSMenuItem!
@@ -25,20 +25,22 @@ class TripwireBar: NSObject, NSApplicationDelegate {
     private var lastPopupPhase = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        // Explicit click handling (manual menu show, no auto-menu)
+        buildMenu()
+
         if let button = statusItem.button {
-            button.image = makeDot(color: .systemGray, size: 18)
-            button.imagePosition = .imageOnly
-            button.image?.isTemplate = false
+            button.title = "●"
             button.target = self
-            button.action = #selector(statusBarClicked)
+            button.action = #selector(statusButtonPressed(_:))
             button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         }
 
-        buildMenu()
-        // Do NOT set statusItem.menu — we show it manually via statusBarClicked()
+        // On macOS 26, the automatic statusItem.menu tracking path can fail for
+        // title-only status items. Keep ownership of the menu and open it
+        // explicitly from both the button action and a local mouse monitor.
+        statusItem.menu = nil
+        installStatusItemClickMonitor()
 
         updateMetrics()
         timer = Timer.scheduledTimer(timeInterval: 10.0, target: self,
@@ -49,24 +51,51 @@ class TripwireBar: NSObject, NSApplicationDelegate {
         requestNotificationPermission()
     }
 
-    // ── Status Bar Click Handler ────────────────────────────
-
-    @objc func statusBarClicked() {
-        guard let button = statusItem.button else { return }
-        updateMetrics()
-        // Show menu on next runloop tick to avoid event-handling conflict
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.menu.popUp(positioning: nil,
-                           at: NSPoint(x: 0, y: button.bounds.height + 4),
-                           in: button)
+    func applicationWillTerminate(_ notification: Notification) {
+        if let monitor = statusItemClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            statusItemClickMonitor = nil
         }
+    }
+
+    private func installStatusItemClickMonitor() {
+        statusItemClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self = self,
+                  let button = self.statusItem.button,
+                  event.window === button.window else {
+                return event
+            }
+
+            let locationInButton = button.convert(event.locationInWindow, from: nil)
+            guard button.bounds.contains(locationInButton) else {
+                return event
+            }
+
+            self.openStatusMenu()
+            return nil
+        }
+    }
+
+    @objc private func statusButtonPressed(_ sender: Any?) {
+        openStatusMenu()
+    }
+
+    private func openStatusMenu() {
+        guard menu != nil else { return }
+        statusItem.popUpMenu(menu)
+    }
+
+    // ── NSMenuDelegate — refresh metrics when menu opens ────
+
+    func menuWillOpen(_ menu: NSMenu) {
+        updateMetrics()
     }
 
     // ── Build Menu ──────────────────────────────────────────
 
     func buildMenu() {
         menu = NSMenu()
+        menu.delegate = self
 
         phaseItem = NSMenuItem(title: "Phase: checking...", action: nil, keyEquivalent: "")
         phaseItem.isEnabled = false
@@ -92,17 +121,9 @@ class TripwireBar: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let recItem = NSMenuItem(title: "📋 Show Recommendations", action: #selector(showRecommendations), keyEquivalent: "r")
-        recItem.target = self
-        menu.addItem(recItem)
-
-        let diagItem = NSMenuItem(title: "🔍 Run Diagnostic", action: #selector(runDiagnostic), keyEquivalent: "d")
-        diagItem.target = self
-        menu.addItem(diagItem)
-
-        let popupItem = NSMenuItem(title: "🪟 Show Popup", action: #selector(showPopupNow), keyEquivalent: "p")
-        popupItem.target = self
-        menu.addItem(popupItem)
+        let overviewItem = NSMenuItem(title: "📊 System Overview", action: #selector(showOverview), keyEquivalent: "\r")
+        overviewItem.target = self
+        menu.addItem(overviewItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -148,19 +169,23 @@ class TripwireBar: NSObject, NSApplicationDelegate {
             self.procItem.title = "Procs: \(procs) (Claude: \(claudeCount))"
             self.phaseItem.title = "Phase: \(phase.uppercased())"
 
-            // Update colored dot
+            // Update colored dot via attributedTitle
             let dotColor = self.phaseColor(phase)
             if let button = self.statusItem.button {
-                let img = self.makeDot(color: dotColor, size: 18)
-                img.isTemplate = false
-                button.image = img
+                button.attributedTitle = NSAttributedString(
+                    string: "●",
+                    attributes: [
+                        .foregroundColor: dotColor,
+                        .font: NSFont.systemFont(ofSize: 14)
+                    ]
+                )
             }
 
             // Phase escalation → sound + popup
             if phase != self.lastPhase && phase != "ok" {
                 self.playAlertSound(for: phase)
                 if phase == "critical" || phase == "emergency" {
-                    self.showPopup(for: phase, load: load, swap: swap, ramFree: ramFree, procs: procs)
+                    self.showOverview()
                     self.lastPopupPhase = phase
                 }
             }
@@ -202,21 +227,10 @@ class TripwireBar: NSObject, NSApplicationDelegate {
     }
 
     func requestNotificationPermission() {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-            if granted {
-                print("TripwireBar: notification permission granted")
-            }
-        }
+        // Skip for CLI-compiled binary (no bundle)
     }
 
     // ── Granular Kill Panel ──────────────────────────────────
-
-    func showPopup(for phase: String, load: Double, swap: Double, ramFree: Int, procs: Int) {
-        playAlertSound(for: phase)
-        let procList = getKillableProcesses()
-        buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: procList)
-    }
 
     func getKillableProcesses() -> [[String: Any]] {
         // Use Python brain to get classified processes as JSON
@@ -260,13 +274,56 @@ print(json.dumps(procs[:30]))
     }
 
     func buildKillPanel(phase: String, load: Double, swap: Double, ramFree: Int, procs: Int, processes: [[String: Any]]) {
-        // Activate so the alert shows properly
         NSApp.activate(ignoringOtherApps: true)
 
-        let phaseEmoji = phase == "emergency" ? "💀" : "🔴"
+        // Fetch brain analysis (async, with timeout)
+        let brainTask = Process()
+        brainTask.launchPath = "/Users/robinsverd/.local/bin/tripwire-brain.py"
+        brainTask.arguments = ["analyze"]
+        let brainPipe = Pipe(); brainTask.standardOutput = brainPipe
+        brainTask.launch()
+        brainTask.waitUntilExit()
+        let brainOutput = String(data: brainPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        // Fetch diagnostic
+        let diagTask = Process()
+        diagTask.launchPath = "/Users/robinsverd/.local/bin/tripwire"
+        diagTask.arguments = ["test"]
+        let diagPipe = Pipe(); diagTask.standardOutput = diagPipe
+        diagTask.launch()
+        diagTask.waitUntilExit()
+        let diagOutput = String(data: diagPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        // Build the combined info text
+        let phaseEmoji = phase == "emergency" ? "💀" : phase == "critical" ? "🔴" : phase == "warning" ? "🟡" : "🟢"
+        var infoText = "Load: \(String(format: "%.1f", load))  |  Swap: \(String(format: "%.0f", swap))MB  |  RAM free: \(ramFree)%  |  \(procs) processes\n\n"
+
+        // Extract diag summary (first 5 lines)
+        let diagLines = diagOutput.split(separator: "\n").prefix(6)
+        if !diagLines.isEmpty {
+            infoText += "── DIAGNOSTICS ──\n"
+            infoText += diagLines.joined(separator: "\n")
+            infoText += "\n\n"
+        }
+
+        // Brain recommendations (trimmed to fit)
+        let brainLines = brainOutput.split(separator: "\n")
+        if brainLines.count > 3 {
+            infoText += "── RECOMMENDATIONS ──\n"
+            let maxLines = min(brainLines.count, 8)
+            for line in brainLines[2..<maxLines] {
+                let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && !trimmed.hasPrefix("──") && !trimmed.hasPrefix("Phase:") && !trimmed.hasPrefix("Load:") {
+                    infoText += trimmed + "\n"
+                }
+            }
+        }
+
+        infoText += "\n── PROCESSES (check for bulk kill, or click Kill buttons) ──"
+
         let panelWidth: CGFloat = 640
         let rowHeight: CGFloat = 22
-        let visibleRows = min(processes.count, 14)
+        let visibleRows = min(processes.count, 12)
         let listHeight = CGFloat(visibleRows) * rowHeight
 
         // Build scrollable process list as the alert's accessory view
@@ -359,9 +416,9 @@ print(json.dumps(procs[:30]))
 
         // Build modal alert — this CANNOT disappear on its own
         let alert = NSAlert()
-        alert.messageText = "\(phaseEmoji) Tripwire — \(phase.uppercased())"
-        alert.informativeText = "Load: \(String(format: "%.1f", load)) | Swap: \(String(format: "%.0f", swap))MB | RAM free: \(ramFree)% | \(procs) processes\nCheck processes for bulk kill, or click individual Kill buttons."
-        alert.alertStyle = .critical
+        alert.messageText = "\(phaseEmoji) \(phase.uppercased()) — System Overview"
+        alert.informativeText = infoText
+        alert.alertStyle = phase == "emergency" ? .critical : .warning
         alert.icon = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
         alert.accessoryView = accessoryView
 
@@ -412,62 +469,15 @@ print(json.dumps(procs[:30]))
 
     // ── Menu Actions ──────────────────────────────────────────
 
-    @objc func showRecommendations() {
-        let task = Process()
-        task.launchPath = "/Users/robinsverd/.local/bin/tripwire-brain.py"
-        task.arguments = ["analyze"]
-        let pipe = Pipe(); task.standardOutput = pipe
-        task.launch()
-        task.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "Analysis failed"
-
-        let alert = NSAlert()
-        alert.messageText = "Tripwire Recommendations"
-        alert.informativeText = output
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Dismiss")
-        alert.addButton(withTitle: "Kill Claude Sessions")
-        alert.addButton(withTitle: "Kill MCP Servers")
-
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            let kill = Process()
-            kill.launchPath = "/Users/robinsverd/.local/bin/claude-kill"
-            kill.arguments = ["--soft"]
-            kill.launch()
-        } else if response == .alertThirdButtonReturn {
-            let kill = Process()
-            kill.launchPath = "/usr/bin/pkill"
-            kill.arguments = ["-f", "npm exec @"]
-            kill.launch()
-        }
-    }
-
-    @objc func showPopupNow() {
+    @objc func showOverview() {
         let load = getLoad()
         let swap = getSwapMB()
         let ramFree = getFreeRamPct()
         let procs = getProcCount()
         let phase = detectPhase(load: load, swap: swap, ramFree: ramFree, procs: procs)
-        let procList = getKillableProcesses()
-        buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: procList)
-    }
 
-    @objc func runDiagnostic() {
-        let task = Process()
-        task.launchPath = "/Users/robinsverd/.local/bin/tripwire"
-        task.arguments = ["test"]
-        let pipe = Pipe(); task.standardOutput = pipe
-        task.launch()
-        task.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "No output"
-
-        let alert = NSAlert()
-        alert.messageText = "Tripwire Diagnostic"
-        alert.informativeText = output
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        // Build combined content inside the kill panel flow
+        buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: getKillableProcesses())
     }
 
     @objc func openLog() {
