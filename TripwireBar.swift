@@ -2,14 +2,13 @@ import Cocoa
 import Foundation
 import AppKit
 import UserNotifications
-import ObjectiveC
 
 // ── Tripwire Menu Bar App ─────────────────────────────────────
 // Shows system health with a COLORED dot (immune to vibrancy).
 // Green = OK, Yellow = Warning, Orange = Critical, Red = Emergency.
 // Includes sound alerts and persistent popup on escalation.
 
-class TripwireBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
+class TripwireBar: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var menu: NSMenu!
@@ -22,7 +21,6 @@ class TripwireBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var phaseItem: NSMenuItem!
 
     // Popup tracking
-    private var alertWindow: NSWindow? = nil
     private var lastPhase = "ok"
     private var lastPopupPhase = ""
 
@@ -215,17 +213,9 @@ class TripwireBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // ── Granular Kill Panel ──────────────────────────────────
 
     func showPopup(for phase: String, load: Double, swap: Double, ramFree: Int, procs: Int) {
-        // Don't replace an open panel — user may be interacting with it
-        if let existing = alertWindow, existing.isVisible { return }
-
         playAlertSound(for: phase)
-
-        // Fetch process list from brain via JSON
         let procList = getKillableProcesses()
-
-        DispatchQueue.main.async {
-            self.buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: procList)
-        }
+        buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: procList)
     }
 
     func getKillableProcesses() -> [[String: Any]] {
@@ -270,112 +260,86 @@ print(json.dumps(procs[:30]))
     }
 
     func buildKillPanel(phase: String, load: Double, swap: Double, ramFree: Int, procs: Int, processes: [[String: Any]]) {
+        // Activate so the alert shows properly
+        NSApp.activate(ignoringOtherApps: true)
+
         let phaseEmoji = phase == "emergency" ? "💀" : "🔴"
-        let windowWidth: CGFloat = 620
-        let headerHeight: CGFloat = 90
-        let rowHeight: CGFloat = 24
-        let footerHeight: CGFloat = 50
-        let visibleRows = min(processes.count, 12)
-        let windowHeight = headerHeight + CGFloat(visibleRows) * rowHeight + footerHeight
+        let panelWidth: CGFloat = 640
+        let rowHeight: CGFloat = 22
+        let visibleRows = min(processes.count, 14)
+        let listHeight = CGFloat(visibleRows) * rowHeight
 
-        let window = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
-            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel],
-            backing: .buffered, defer: false
-        )
-        window.title = "\(phaseEmoji) Tripwire — Kill Panel"
-        window.level = .floating
-        window.isReleasedWhenClosed = false
-        window.hidesOnDeactivate = false
-        window.isFloatingPanel = true
-        window.becomesKeyOnlyIfNeeded = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
-        window.center()
+        // Build scrollable process list as the alert's accessory view
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: listHeight + 20))
 
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
-        window.contentView = contentView
-
-        // Header
-        let headerLabel = NSTextField(labelWithString: "Load: \(String(format: "%.1f", load)) | Swap: \(String(format: "%.0f", swap))MB | RAM free: \(ramFree)% | \(procs) processes")
-        headerLabel.frame = NSRect(x: 15, y: windowHeight - 25, width: windowWidth - 30, height: 18)
-        headerLabel.font = NSFont.boldSystemFont(ofSize: 12)
-        contentView.addSubview(headerLabel)
-
-        let hintLabel = NSTextField(labelWithString: "Check processes to kill — 🟢 safe  🟡 ask-first  🔴 caution")
-        hintLabel.frame = NSRect(x: 15, y: windowHeight - 45, width: windowWidth - 30, height: 16)
-        hintLabel.font = NSFont.systemFont(ofSize: 10)
-        hintLabel.textColor = .secondaryLabelColor
-        contentView.addSubview(hintLabel)
-
-        // Column headers
-        let colName = NSTextField(labelWithString: "Process")
-        colName.frame = NSRect(x: 35, y: windowHeight - 72, width: 250, height: 14)
-        colName.font = NSFont.boldSystemFont(ofSize: 9)
-        colName.textColor = .tertiaryLabelColor
-        contentView.addSubview(colName)
-
-        let colCPU = NSTextField(labelWithString: "CPU")
-        colCPU.frame = NSRect(x: 340, y: windowHeight - 72, width: 45, height: 14)
-        colCPU.font = NSFont.boldSystemFont(ofSize: 9)
-        colCPU.textColor = .tertiaryLabelColor
-        colCPU.alignment = .right
-        contentView.addSubview(colCPU)
-
-        let colRAM = NSTextField(labelWithString: "RAM")
-        colRAM.frame = NSRect(x: 395, y: windowHeight - 72, width: 55, height: 14)
-        colRAM.font = NSFont.boldSystemFont(ofSize: 9)
-        colRAM.textColor = .tertiaryLabelColor
-        colRAM.alignment = .right
-        contentView.addSubview(colRAM)
-
-        // Scrollable process list
-        let scrollView = NSScrollView(frame: NSRect(x: 10, y: footerHeight + 5, width: windowWidth - 20, height: CGFloat(visibleRows) * rowHeight))
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: listHeight))
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .bezelBorder
 
-        let docView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth - 40, height: CGFloat(processes.count) * rowHeight))
+        let docView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth - 20, height: CGFloat(processes.count) * rowHeight))
         var checkboxes: [NSButton] = []
         var pids: [Int] = []
 
+        // Column header row
+        let hY = CGFloat(processes.count - 1) * rowHeight
+        let hKill = NSTextField(labelWithString: "Kill")
+        hKill.frame = NSRect(x: 38, y: hY + 6, width: 30, height: 12)
+        hKill.font = NSFont.boldSystemFont(ofSize: 9)
+        hKill.textColor = .tertiaryLabelColor
+        docView.addSubview(hKill)
+        let hName = NSTextField(labelWithString: "Process")
+        hName.frame = NSRect(x: 88, y: hY + 6, width: 280, height: 12)
+        hName.font = NSFont.boldSystemFont(ofSize: 9)
+        hName.textColor = .tertiaryLabelColor
+        docView.addSubview(hName)
+        let hCPU = NSTextField(labelWithString: "CPU")
+        hCPU.frame = NSRect(x: 370, y: hY + 6, width: 45, height: 12)
+        hCPU.font = NSFont.boldSystemFont(ofSize: 9)
+        hCPU.textColor = .tertiaryLabelColor
+        hCPU.alignment = .right
+        docView.addSubview(hCPU)
+        let hRAM = NSTextField(labelWithString: "RAM")
+        hRAM.frame = NSRect(x: 425, y: hY + 6, width: 55, height: 12)
+        hRAM.font = NSFont.boldSystemFont(ofSize: 9)
+        hRAM.textColor = .tertiaryLabelColor
+        hRAM.alignment = .right
+        docView.addSubview(hRAM)
+
         for (i, proc) in processes.enumerated() {
-            let y = CGFloat(processes.count - 1 - i) * rowHeight + 2
+            let y = CGFloat(processes.count - 2 - i) * rowHeight + 2
             let pid = proc["pid"] as? Int ?? 0
             let name = proc["name"] as? String ?? "?"
             let cpu = proc["cpu"] as? Double ?? 0
             let mem = proc["mem"] as? Int ?? 0
             let cat = proc["cat"] as? String ?? "other"
 
-            // Cat color indicator
-            let colorBox = NSBox(frame: NSRect(x: 4, y: y + 4, width: 8, height: 8))
-            colorBox.boxType = .custom
-            colorBox.fillColor = cat == "claude" ? NSColor.systemPurple :
-                                  cat == "chrome" ? NSColor.systemBlue :
-                                  cat == "mcp" ? NSColor.systemGreen :
-                                  cat == "node" ? NSColor.systemOrange :
-                                  cat == "nextjs" ? NSColor.systemRed : NSColor.systemGray
-            colorBox.cornerRadius = 2
-            colorBox.borderWidth = 0
-            docView.addSubview(colorBox)
+            // Per-process Kill button
+            let killBtn = NSButton(title: "Kill", target: self, action: #selector(killSingleFromAlert(_:)))
+            killBtn.frame = NSRect(x: 34, y: y + 1, width: 44, height: 16)
+            killBtn.bezelStyle = .roundRect
+            killBtn.font = NSFont.systemFont(ofSize: 9)
+            killBtn.tag = pid
+            docView.addSubview(killBtn)
 
-            // Checkbox
+            // Checkbox for bulk
             let cb = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-            cb.frame = NSRect(x: 16, y: y + 1, width: 18, height: 18)
+            cb.frame = NSRect(x: 4, y: y + 2, width: 16, height: 16)
             cb.state = (cat == "mcp" || (cat == "chrome" && mem > 300) || cpu > 50) ? .on : .off
             docView.addSubview(cb)
             checkboxes.append(cb)
             pids.append(pid)
 
-            // Process name
-            let shortName = name.count > 45 ? String(name.prefix(42)) + "..." : name
+            // Name
+            let shortName = name.count > 52 ? String(name.prefix(49)) + "..." : name
             let nameLabel = NSTextField(labelWithString: shortName)
-            nameLabel.frame = NSRect(x: 38, y: y + 2, width: 290, height: 14)
+            nameLabel.frame = NSRect(x: 88, y: y + 3, width: 275, height: 13)
             nameLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
             docView.addSubview(nameLabel)
 
             // CPU
             let cpuLabel = NSTextField(labelWithString: String(format: "%.0f%%", cpu))
-            cpuLabel.frame = NSRect(x: 340, y: y + 2, width: 45, height: 14)
+            cpuLabel.frame = NSRect(x: 370, y: y + 3, width: 45, height: 13)
             cpuLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: cpu > 30 ? .bold : .regular)
             cpuLabel.alignment = .right
             cpuLabel.textColor = cpu > 50 ? .systemRed : (cpu > 20 ? .systemOrange : .labelColor)
@@ -383,126 +347,67 @@ print(json.dumps(procs[:30]))
 
             // RAM
             let ramLabel = NSTextField(labelWithString: mem > 999 ? String(format: "%.1fG", Double(mem)/1024.0) : "\(mem)M")
-            ramLabel.frame = NSRect(x: 395, y: y + 2, width: 55, height: 14)
+            ramLabel.frame = NSRect(x: 425, y: y + 3, width: 55, height: 13)
             ramLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: mem > 500 ? .bold : .regular)
             ramLabel.alignment = .right
             ramLabel.textColor = mem > 1000 ? .systemRed : (mem > 500 ? .systemOrange : .labelColor)
             docView.addSubview(ramLabel)
-
-            // Select all checkbox equivalent: click on name toggles checkbox
-            let nameBtn = NSButton(frame: NSRect(x: 38, y: y, width: 350, height: rowHeight))
-            nameBtn.title = ""
-            nameBtn.isBordered = false
-            nameBtn.target = self
-            nameBtn.action = #selector(toggleCheckbox(_:))
-            nameBtn.tag = i
-            docView.addSubview(nameBtn)
         }
 
         scrollView.documentView = docView
-        contentView.addSubview(scrollView)
+        accessoryView.addSubview(scrollView)
 
-        // Footer buttons
-        let killBtn = NSButton(title: "💀 Kill Selected", target: self, action: #selector(killSelectedProcesses(_:)))
-        killBtn.frame = NSRect(x: 15, y: 8, width: 130, height: 30)
-        killBtn.bezelStyle = .rounded
-        killBtn.keyEquivalent = "\r"
-        contentView.addSubview(killBtn)
+        // Build modal alert — this CANNOT disappear on its own
+        let alert = NSAlert()
+        alert.messageText = "\(phaseEmoji) Tripwire — \(phase.uppercased())"
+        alert.informativeText = "Load: \(String(format: "%.1f", load)) | Swap: \(String(format: "%.0f", swap))MB | RAM free: \(ramFree)% | \(procs) processes\nCheck processes for bulk kill, or click individual Kill buttons."
+        alert.alertStyle = .critical
+        alert.icon = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
+        alert.accessoryView = accessoryView
 
-        let killClaudeBtn = NSButton(title: "Kill All Claude", target: self, action: #selector(killAllClaude(_:)))
-        killClaudeBtn.frame = NSRect(x: 155, y: 8, width: 130, height: 30)
-        killClaudeBtn.bezelStyle = .rounded
-        contentView.addSubview(killClaudeBtn)
+        alert.addButton(withTitle: "Dismiss")
+        alert.addButton(withTitle: "Kill Checked")
+        alert.addButton(withTitle: "Kill Claude + MCP")
 
-        let killMcpBtn = NSButton(title: "Kill All MCP", target: self, action: #selector(killAllMcp(_:)))
-        killMcpBtn.frame = NSRect(x: 295, y: 8, width: 120, height: 30)
-        killMcpBtn.bezelStyle = .rounded
-        contentView.addSubview(killMcpBtn)
+        // Store checkboxes + pids for button action
+        // (modal alert blocks until dismissed, so no reference needed)
 
-        // Store references for actions
-        objc_setAssociatedObject(window, "checkboxes", checkboxes, .OBJC_ASSOCIATION_RETAIN)
-        objc_setAssociatedObject(window, "pids", pids, .OBJC_ASSOCIATION_RETAIN)
+        let response = alert.runModal()
 
-        // Dismiss button
-        let dismissBtn = NSButton(title: "Dismiss", target: self, action: #selector(closeKillPanel(_:)))
-        dismissBtn.frame = NSRect(x: windowWidth - 95, y: 8, width: 80, height: 30)
-        dismissBtn.bezelStyle = .rounded
-        dismissBtn.keyEquivalent = "\u{1b}"
-        contentView.addSubview(dismissBtn)
-
-        alertWindow = window
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func toggleCheckbox(_ sender: NSButton) {
-        guard let window = alertWindow else { return }
-        if let checkboxes = objc_getAssociatedObject(window, "checkboxes") as? [NSButton],
-           sender.tag < checkboxes.count {
-            let cb = checkboxes[sender.tag]
-            cb.state = cb.state == .on ? .off : .on
+        switch response {
+        case .alertSecondButtonReturn:  // Kill Checked
+            var killed = 0
+            for (i, cb) in checkboxes.enumerated() where cb.state == .on && i < pids.count {
+                let task = Process()
+                task.launchPath = "/bin/kill"; task.arguments = ["-9", String(pids[i])]
+                task.launch(); task.waitUntilExit()
+                killed += 1
+            }
+            if killed == 0 {
+                let a = NSAlert(); a.messageText = "No processes checked"; a.runModal()
+            }
+        case .alertThirdButtonReturn:  // Kill Claude + MCP
+            let ckill = Process()
+            ckill.launchPath = "/Users/robinsverd/.local/bin/claude-kill"
+            ckill.arguments = ["--soft"]
+            ckill.launch()
+            let mkill = Process()
+            mkill.launchPath = "/usr/bin/pkill"
+            mkill.arguments = ["-f", "npm exec @"]
+            mkill.launch()
+        default: break
         }
     }
 
-    @objc func killSelectedProcesses(_ sender: NSButton) {
-        guard let window = alertWindow else { return }
-        guard let checkboxes = objc_getAssociatedObject(window, "checkboxes") as? [NSButton],
-              let pids = objc_getAssociatedObject(window, "pids") as? [Int] else { return }
-
-        var toKill: [Int] = []
-        for (i, cb) in checkboxes.enumerated() where cb.state == .on && i < pids.count {
-            toKill.append(pids[i])
-        }
-
-        guard !toKill.isEmpty else {
-            let a = NSAlert(); a.messageText = "No processes selected"; a.runModal(); return
-        }
-
+    @objc func killSingleFromAlert(_ sender: NSButton) {
+        let pid = sender.tag
+        guard pid > 0 else { return }
         let task = Process()
         task.launchPath = "/bin/kill"
-        task.arguments = ["-9"] + toKill.map { String($0) }
+        task.arguments = ["-9", String(pid)]
         task.launch()
-
-        window.close()
-        alertWindow = nil
-
-        // Feedback notification
-        let notify = Process()
-        notify.launchPath = "/usr/bin/osascript"
-        notify.arguments = ["-e", "display notification \"Killed \(toKill.count) process(es)\" with title \"Tripwire\" sound name \"Pop\""]
-        notify.launch()
-    }
-
-    @objc func killAllClaude(_ sender: NSButton) {
-        let task = Process()
-        task.launchPath = "/Users/robinsverd/.local/bin/claude-kill"
-        task.arguments = ["--soft"]
-        task.launch()
-        alertWindow?.close()
-        alertWindow = nil
-    }
-
-    @objc func killAllMcp(_ sender: NSButton) {
-        let task = Process()
-        task.launchPath = "/usr/bin/pkill"
-        task.arguments = ["-f", "npm exec @"]
-        task.launch()
-        alertWindow?.close()
-        alertWindow = nil
-    }
-
-    @objc func closeKillPanel(_ sender: NSButton) {
-        alertWindow?.close()
-        alertWindow = nil
-    }
-
-    // ── NSWindowDelegate — prevent auto-close ───────────────
-
-    func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window == alertWindow {
-            alertWindow = nil
-        }
+        sender.title = "✓ Done"
+        sender.isEnabled = false
     }
 
     // ── Menu Actions ──────────────────────────────────────────
@@ -544,10 +449,8 @@ print(json.dumps(procs[:30]))
         let ramFree = getFreeRamPct()
         let procs = getProcCount()
         let phase = detectPhase(load: load, swap: swap, ramFree: ramFree, procs: procs)
-        // Force close any existing panel to show fresh one
-        alertWindow?.close()
-        alertWindow = nil
-        showPopup(for: phase, load: load, swap: swap, ramFree: ramFree, procs: procs)
+        let procList = getKillableProcesses()
+        buildKillPanel(phase: phase, load: load, swap: swap, ramFree: ramFree, procs: procs, processes: procList)
     }
 
     @objc func runDiagnostic() {
