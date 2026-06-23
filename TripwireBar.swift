@@ -199,7 +199,9 @@ class TripwireBar: NSObject, NSApplicationDelegate {
     // ── Granular Kill Panel ──────────────────────────────────
 
     func showPopup(for phase: String, load: Double, swap: Double, ramFree: Int, procs: Int) {
-        alertWindow?.close()
+        // Don't replace an open panel — user may be interacting with it
+        if let existing = alertWindow, existing.isVisible { return }
+
         playAlertSound(for: phase)
 
         // Fetch process list from brain via JSON
@@ -260,15 +262,24 @@ print(json.dumps(procs[:30]))
         let visibleRows = min(processes.count, 12)
         let windowHeight = headerHeight + CGFloat(visibleRows) * rowHeight + footerHeight
 
-        let window = NSWindow(
+        let window = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
         window.title = "\(phaseEmoji) Tripwire — Kill Panel"
         window.level = .floating
         window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
+        window.isFloatingPanel = true
+        window.becomesKeyOnlyIfNeeded = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
         window.center()
+
+        // Clean up reference when user closes via red X
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            self?.alertWindow = nil
+        }
 
         let contentView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
         window.contentView = contentView
@@ -436,7 +447,6 @@ print(json.dumps(procs[:30]))
             let a = NSAlert(); a.messageText = "No processes selected"; a.runModal(); return
         }
 
-        let pidList = toKill.map { String($0) }.joined(separator: " ")
         let task = Process()
         task.launchPath = "/bin/kill"
         task.arguments = ["-9"] + toKill.map { String($0) }
@@ -514,6 +524,9 @@ print(json.dumps(procs[:30]))
         let ramFree = getFreeRamPct()
         let procs = getProcCount()
         let phase = detectPhase(load: load, swap: swap, ramFree: ramFree, procs: procs)
+        // Force close any existing panel to show fresh one
+        alertWindow?.close()
+        alertWindow = nil
         showPopup(for: phase, load: load, swap: swap, ramFree: ramFree, procs: procs)
     }
 
