@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thrivbe.tripwire</string>
+    <key>Program</key>
+    <string>/Users/robinsverd/.local/bin/tripwire.sh</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/robinsverd/.local/var/tripwire/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/robinsverd/.local/var/tripwire/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/Users/robinsverd/.local/bin</string>
+        <key>TRIPWIRE_INTERVAL</key>
+        <string>30</string>
+    </dict>
+</dict>
+</plist>

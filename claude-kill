@@ -1,0 +1,38 @@
+#!/bin/bash
+# claude-kill — emergency Claude session killer
+# Usage: claude-kill [--soft|--hard]
+
+MODE="${1:---soft}"
+
+case "$MODE" in
+    --soft)
+        echo "Sending SIGTERM to all Claude processes..."
+        pkill -TERM -f '/Users/robinsverd/.local/bin/claude' 2>/dev/null
+        sleep 2
+        remaining=$(ps ax -o comm= | grep -c '^claude$' || echo 0)
+        echo "$remaining Claude processes remaining"
+        ;;
+
+    --hard)
+        echo "Force killing ALL Claude processes..."
+        pkill -KILL -f '/Users/robinsverd/.local/bin/claude' 2>/dev/null
+        # Also kill orphaned MCP servers
+        pkill -KILL -f 'npm exec @' 2>/dev/null
+        remaining=$(ps ax -o comm= | grep -c '^claude$' || echo 0)
+        echo "$remaining Claude processes remaining"
+        ;;
+
+    --count)
+        echo "Claude processes: $(ps ax -o comm= | grep -c '^claude$' || echo 0)"
+        echo "Node processes:   $(ps ax -o comm= | grep -c '^node$' || echo 0)"
+        echo "Total processes:  $(ps ax -o pid= | wc -l | tr -d ' ')"
+        ;;
+
+    *)
+        echo "Usage: claude-kill [--soft|--hard|--count]"
+        echo "  --soft   Graceful shutdown (SIGTERM)"
+        echo "  --hard   Force kill (SIGKILL) + MCP servers"
+        echo "  --count  Just count processes"
+        exit 1
+        ;;
+esac

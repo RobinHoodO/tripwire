@@ -1,0 +1,81 @@
+#!/bin/bash
+# tripwire — CLI control for the tripwire monitoring daemon
+# Usage:
+#   tripwire start     — start monitoring
+#   tripwire stop      — stop monitoring  
+#   tripwire status    — show current state
+#   tripwire log       — tail the log
+#   tripwire test      — run a single check and print results
+
+TRIPWIRE_SCRIPT="$HOME/.local/bin/tripwire.sh"
+PLIST="$HOME/Library/LaunchAgents/com.thrivbe.tripwire.plist"
+LOG="$HOME/.local/var/tripwire/tripwire.log"
+
+cmd="${1:-status}"
+
+case "$cmd" in
+    start)
+        mkdir -p "$HOME/.local/var/tripwire"
+        launchctl load "$PLIST" 2>/dev/null && echo "✅ Tripwire started" || echo "❌ Failed to start"
+        ;;
+    stop)
+        launchctl unload "$PLIST" 2>/dev/null && echo "✅ Tripwire stopped" || echo "❌ Failed to stop"
+        ;;
+    status)
+        if launchctl list com.thrivbe.tripwire &>/dev/null; then
+            echo "✅ Tripwire is RUNNING"
+            if [ -f "$LOG" ]; then
+                echo ""
+                echo "Last 5 log entries:"
+                tail -5 "$LOG"
+            fi
+            if [ -f "$HOME/.local/var/tripwire/state.json" ]; then
+                echo ""
+                echo "State:"
+                python3 -c "
+import json
+with open('$HOME/.local/var/tripwire/state.json') as f:
+    d = json.load(f)
+    print(f'  Phase: {d.get(\"last_phase\", \"?\")}')
+    print(f'  Last check: {d.get(\"last_check\", \"?\")}')
+    print(f'  Last escalation: {d.get(\"last_escalation\", 0)}')
+" 2>/dev/null
+            fi
+        else
+            echo "❌ Tripwire is NOT running"
+            echo "   Start with: tripwire start"
+        fi
+        ;;
+    log)
+        if [ -f "$LOG" ]; then
+            tail -f "$LOG"
+        else
+            echo "No log file yet. Start tripwire first."
+        fi
+        ;;
+    test)
+        echo "Running single diagnostic check..."
+        echo ""
+        echo "  Load avg:     $(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' | tr -d '{}')"
+        echo "  Swap used:    $(sysctl vm.swapusage 2>/dev/null | grep -o 'used = [0-9.]*M')"
+        echo "  Processes:    $(ps ax -o pid= | wc -l | tr -d ' ')"
+        echo "  Claude:       $(ps ax -o comm= | grep -c '^claude$' || echo 0)"
+        echo "  Chrome:       $(ps ax -o comm= | grep -c 'Google Chrome' || echo 0)"
+        echo "  Node:         $(ps ax -o comm= | grep -c '^node$' || echo 0)"
+        fsevents_cpu=$(ps ax -o pcpu=,comm= 2>/dev/null | awk '$2=="fseventsd"{print $1"%"}')
+        spotlight_cpu=$(ps ax -o pcpu=,comm= 2>/dev/null | awk '$2~/^md/{sum+=$1} END{printf "%.0f%%", sum}')
+        echo "  fseventsd:    ${fsevents_cpu:-0%}"
+        echo "  Spotlight:    ${spotlight_cpu:-0%}"
+
+        # Free RAM
+        free=$(vm_stat | awk '/Pages free:/ {gsub(/\./, ""); print $NF}')
+        total=$(sysctl -n hw.memsize)
+        free_bytes=$((free * 16384))
+        pct=$((free_bytes * 100 / total))
+        echo "  Free RAM:     ${pct}%"
+        ;;
+    *)
+        echo "Usage: tripwire {start|stop|status|log|test}"
+        exit 1
+        ;;
+esac
