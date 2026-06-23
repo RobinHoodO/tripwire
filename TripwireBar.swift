@@ -21,6 +21,7 @@ class TripwireBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var phaseItem: NSMenuItem!
 
     // Popup tracking
+    private var currentCheckboxes: [NSButton] = []
     private var lastPhase = "ok"
     private var lastPopupPhase = ""
 
@@ -321,13 +322,13 @@ print(json.dumps(procs[:30]))
 
         infoText += "\n── PROCESSES (check for bulk kill, or click Kill buttons) ──"
 
-        let panelWidth: CGFloat = 640
+        let panelWidth: CGFloat = 780
         let rowHeight: CGFloat = 22
         let visibleRows = min(processes.count, 12)
         let listHeight = CGFloat(visibleRows) * rowHeight
 
         // Build scrollable process list as the alert's accessory view
-        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: listHeight + 20))
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: listHeight + 42))
 
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: listHeight))
         scrollView.hasVerticalScroller = true
@@ -346,18 +347,18 @@ print(json.dumps(procs[:30]))
         hKill.textColor = .tertiaryLabelColor
         docView.addSubview(hKill)
         let hName = NSTextField(labelWithString: "Process")
-        hName.frame = NSRect(x: 88, y: hY + 6, width: 280, height: 12)
+        hName.frame = NSRect(x: 100, y: hY + 6, width: 420, height: 12)
         hName.font = NSFont.boldSystemFont(ofSize: 9)
         hName.textColor = .tertiaryLabelColor
         docView.addSubview(hName)
         let hCPU = NSTextField(labelWithString: "CPU")
-        hCPU.frame = NSRect(x: 370, y: hY + 6, width: 45, height: 12)
+        hCPU.frame = NSRect(x: 530, y: hY + 6, width: 45, height: 12)
         hCPU.font = NSFont.boldSystemFont(ofSize: 9)
         hCPU.textColor = .tertiaryLabelColor
         hCPU.alignment = .right
         docView.addSubview(hCPU)
         let hRAM = NSTextField(labelWithString: "RAM")
-        hRAM.frame = NSRect(x: 425, y: hY + 6, width: 55, height: 12)
+        hRAM.frame = NSRect(x: 585, y: hY + 6, width: 55, height: 12)
         hRAM.font = NSFont.boldSystemFont(ofSize: 9)
         hRAM.textColor = .tertiaryLabelColor
         hRAM.alignment = .right
@@ -388,15 +389,15 @@ print(json.dumps(procs[:30]))
             pids.append(pid)
 
             // Name
-            let shortName = name.count > 52 ? String(name.prefix(49)) + "..." : name
+            let shortName = name.count > 85 ? String(name.prefix(82)) + "..." : name
             let nameLabel = NSTextField(labelWithString: shortName)
-            nameLabel.frame = NSRect(x: 88, y: y + 3, width: 275, height: 13)
+            nameLabel.frame = NSRect(x: 100, y: y + 4, width: 420, height: 14)
             nameLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
             docView.addSubview(nameLabel)
 
             // CPU
             let cpuLabel = NSTextField(labelWithString: String(format: "%.0f%%", cpu))
-            cpuLabel.frame = NSRect(x: 370, y: y + 3, width: 45, height: 13)
+            cpuLabel.frame = NSRect(x: 530, y: y + 4, width: 45, height: 14)
             cpuLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: cpu > 30 ? .bold : .regular)
             cpuLabel.alignment = .right
             cpuLabel.textColor = cpu > 50 ? .systemRed : (cpu > 20 ? .systemOrange : .labelColor)
@@ -404,7 +405,7 @@ print(json.dumps(procs[:30]))
 
             // RAM
             let ramLabel = NSTextField(labelWithString: mem > 999 ? String(format: "%.1fG", Double(mem)/1024.0) : "\(mem)M")
-            ramLabel.frame = NSRect(x: 425, y: y + 3, width: 55, height: 13)
+            ramLabel.frame = NSRect(x: 585, y: y + 4, width: 55, height: 14)
             ramLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: mem > 500 ? .bold : .regular)
             ramLabel.alignment = .right
             ramLabel.textColor = mem > 1000 ? .systemRed : (mem > 500 ? .systemOrange : .labelColor)
@@ -413,6 +414,22 @@ print(json.dumps(procs[:30]))
 
         scrollView.documentView = docView
         accessoryView.addSubview(scrollView)
+
+        // Store checkboxes for All/None toggle
+        currentCheckboxes = checkboxes
+
+        // Select All / None buttons above the scroll view
+        let allBtn = NSButton(title: "☑ Select All", target: self, action: #selector(selectAllChecks))
+        allBtn.frame = NSRect(x: 4, y: listHeight + 4, width: 90, height: 20)
+        allBtn.bezelStyle = .roundRect
+        allBtn.font = NSFont.systemFont(ofSize: 9)
+        accessoryView.addSubview(allBtn)
+
+        let noneBtn = NSButton(title: "☐ Deselect All", target: self, action: #selector(deselectAllChecks))
+        noneBtn.frame = NSRect(x: 98, y: listHeight + 4, width: 100, height: 20)
+        noneBtn.bezelStyle = .roundRect
+        noneBtn.font = NSFont.systemFont(ofSize: 9)
+        accessoryView.addSubview(noneBtn)
 
         // Build modal alert — this CANNOT disappear on its own
         let alert = NSAlert()
@@ -454,6 +471,14 @@ print(json.dumps(procs[:30]))
             mkill.launch()
         default: break
         }
+    }
+
+    @objc func selectAllChecks() {
+        for cb in currentCheckboxes { cb.state = .on }
+    }
+
+    @objc func deselectAllChecks() {
+        for cb in currentCheckboxes { cb.state = .off }
     }
 
     @objc func killSingleFromAlert(_ sender: NSButton) {
